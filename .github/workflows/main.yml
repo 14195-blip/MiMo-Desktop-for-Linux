@@ -99,5 +99,5 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: mimo-ai-linux-${{ github.run_number }}
-          name: MiMo AI (Linux, unofficial) — run #${{ github.run_number }}
+          name: "MiMo AI (Linux, unofficial) — run #${{ github.run_number }}"
           files: dist/**/*
