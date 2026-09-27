@@ -301,6 +301,26 @@ async function assertNativesMatchArch(nmDir: string, arch: TargetArch) {
   Deno.exit(1);
 }
 
+// A .node/.so is an ELF object on Linux. The Windows payload occasionally
+// carries a macOS build too — @parcel/watcher/build/Release/watcher.node is a
+// Mach-O arm64 bundle whose path mentions neither win32 nor darwin, so the
+// name-based filter above cannot see it. Nothing can dlopen it here.
+async function isForeignBinary(p: string): Promise<boolean> {
+  if (!/\.(node|so|so\.\d+)$/.test(p)) return false;
+  const f = await Deno.open(p, { read: true });
+  try {
+    const head = new Uint8Array(4);
+    const n = await f.read(head);
+    const isElf = n === 4 && head[0] === 0x7f && head[1] === 0x45 &&
+      head[2] === 0x4c && head[3] === 0x46;
+    return !isElf;
+  } catch {
+    return false; // unreadable: leave it, do not silently delete payload
+  } finally {
+    f.close();
+  }
+}
+
 // Remove foreign-platform natives from a finished app.asar.unpacked tree and
 // collapse the directories that end up empty. Needed because @electron/asar's
 // createPackage writes every `unpack`-matching file into <dest>.unpacked
@@ -317,7 +337,7 @@ async function pruneForeignNatives(dir: string) {
       const r = await pruneForeignNatives(p);
       files += r.files;
       bytes += r.bytes;
-    } else if (isForeignPlatform(p)) {
+    } else if (isForeignPlatform(p) || await isForeignBinary(p)) {
       bytes += (await Deno.stat(p)).size;
       await Deno.remove(p);
       files++;
@@ -1284,17 +1304,21 @@ Deno.test("pruneForeignNatives: removes win32 tree, keeps linux, collapses dirs"
       await Deno.writeTextFile(p, data);
     };
     // a realistic app.asar.unpacked: linux natives that must survive, and the
-    // win32 leftovers @electron/asar writes on its own
-    await put("node_modules/onnxruntime-node/bin/napi-v6/linux/arm64/libonnxruntime.so.1", "x");
-    await put("node_modules/onnxruntime-node/bin/napi-v6/win32/x64/onnxruntime.dll", "x");
-    await put("node_modules/@napi-rs/canvas-linux-arm64-gnu/skia.linux-arm64-gnu.node", "x");
-    await put("node_modules/@napi-rs/canvas-win32-x64-msvc/skia.win32-x64-msvc.node", "x");
+    // win32 leftovers @electron/asar writes on its own. The keepers carry real
+    // ELF magic, because pruneForeignNatives sniffs the header, not the name.
+    const ELF = "\x7fELF";
+    await put("node_modules/onnxruntime-node/bin/napi-v6/linux/arm64/libonnxruntime.so.1", ELF);
+    await put("node_modules/onnxruntime-node/bin/napi-v6/win32/x64/onnxruntime.dll", "MZ");
+    await put("node_modules/@napi-rs/canvas-linux-arm64-gnu/skia.linux-arm64-gnu.node", ELF);
+    await put("node_modules/@napi-rs/canvas-win32-x64-msvc/skia.win32-x64-msvc.node", "MZ");
     await put("node_modules/@napi-rs/canvas-win32-x64-msvc/icudtl.dat", "x");
-    await put("node_modules/@parcel/watcher-win32-x64/watcher.node", "x");
-    await put("node_modules/@lydell/node-pty-win32-x64/prebuilds/win32-x64/conpty/OpenConsole.exe", "x");
+    await put("node_modules/@parcel/watcher-win32-x64/watcher.node", "MZ");
+    await put("node_modules/@lydell/node-pty-win32-x64/prebuilds/win32-x64/conpty/OpenConsole.exe", "MZ");
+    // a macOS build whose path mentions no foreign platform: Mach-O magic
+    await put("node_modules/@parcel/watcher/build/Release/watcher.node", "MH");
 
     const r = await pruneForeignNatives(root);
-    if (r.files !== 5) throw new Error(`expected 5 swept, got ${r.files}`);
+    if (r.files !== 6) throw new Error(`expected 6 swept, got ${r.files}`);
 
     const left: string[] = [];
     const walk = async (dir: string, prefix = "") => {
