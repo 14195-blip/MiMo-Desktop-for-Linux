@@ -628,7 +628,7 @@ Description: Unofficial Linux (Electron) port of Xiaomi MiMo AI
   // dpkg-deb says *why* it refused on stderr; run() surfaces that on failure.
   await run(
     `dpkg-deb --build (${basename(debPath)})`,
-    $`dpkg-deb -Z ${DEB_COMPRESSION} -z ${DEB_COMPRESSION_LEVEL} --root-owner-group ${stageDir} ${debPath}`,
+    $`dpkg-deb --build -Z ${DEB_COMPRESSION} -z ${DEB_COMPRESSION_LEVEL} --root-owner-group ${stageDir} ${debPath}`,
   );
   await Deno.remove(stageDir, { recursive: true });
   console.log(
