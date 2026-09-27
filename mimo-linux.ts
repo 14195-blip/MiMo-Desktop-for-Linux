@@ -478,6 +478,33 @@ async function findMissingPkgs(
 // .deb packaging
 // ---------------------------------------------------------------------------
 
+// Recursive copy that preserves permissions, symlinks and timestamps — i.e.
+// what `cp -a` was being used for when staging the .deb payload. Done with
+// plain Deno APIs instead of shelling out, because dax implements `cp` as a
+// builtin that only understands -r/-R/--recursive and rejects -a outright
+// ("cp: unsupported flag: -a"), and Deno.cp is still gated behind an unstable
+// flag on some Deno 2.x releases. Everything used here (lstat/readDir/mkdir/
+// copyFile/symlink/chmod/utime) is stable.
+async function copyTree(src: string, dest: string): Promise<void> {
+  const st = await Deno.lstat(src);
+  if (st.isDirectory) {
+    await Deno.mkdir(dest, { recursive: true });
+    for await (const entry of Deno.readDir(src)) {
+      await copyTree(join(src, entry.name), join(dest, entry.name));
+    }
+    // mkdir applies the umask, so put the source mode back explicitly.
+    await Deno.chmod(dest, st.mode & 0o7777);
+  } else if (st.isSymlink) {
+    await Deno.symlink(await Deno.readLink(src), dest);
+  } else {
+    // copyFile carries the permissions over, so the executable bit on
+    // `electron` and `mimo.sh` survives into the package.
+    await Deno.copyFile(src, dest);
+    const mtime = st.mtime ?? new Date();
+    await Deno.utime(dest, st.atime ?? mtime, mtime);
+  }
+}
+
 async function buildDeb(
   outDir: string,
   arch: TargetArch,
@@ -507,10 +534,7 @@ async function buildDeb(
 
   // Copy the whole portable build tree in as-is: electron binary, resources/
   // (app.asar + app.asar.unpacked), mimo.sh, icon.png, mimo.desktop.
-  await run(
-    `cp -a (${basename(outDir)} -> ${stageDir}/opt/mimo-ai)`,
-    $`cp -a ${outDir}/. ${pkgOptDir}/`,
-  );
+  await copyTree(outDir, pkgOptDir);
 
   // mimo.sh locates itself via "$(dirname "$0")", so it works unmodified
   // from /opt/mimo-ai too — just put it on PATH.
