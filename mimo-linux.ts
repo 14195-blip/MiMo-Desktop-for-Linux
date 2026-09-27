@@ -610,7 +610,7 @@ async function copyTree(src: string, dest: string): Promise<void> {
       await copyTree(join(src, entry.name), join(dest, entry.name));
     }
     // mkdir applies the umask, so put the source mode back explicitly.
-    await Deno.chmod(dest, st.mode & 0o7777);
+    if (st.mode != null) await Deno.chmod(dest, st.mode & 0o7777);
   } else if (st.isSymlink) {
     await Deno.symlink(await Deno.readLink(src), dest);
   } else {
