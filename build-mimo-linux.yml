@@ -1,0 +1,88 @@
+name: Build MiMo AI (Linux)
+
+on:
+  workflow_dispatch:
+    inputs:
+      exe_url:
+        description: "Installer URL (change only if Xiaomi's CDN path changes)"
+        required: false
+        default: "https://mimocode-cdn.xiaomimimo.com/mimocode/mimodesktopai/XiaomiMiMo-AI-latest-x64-setup.exe"
+      electron_version:
+        description: "Force a specific Electron version (blank = auto-detect from the exe)"
+        required: false
+        default: ""
+      make_release:
+        description: "Publish a GitHub Release with the built artifacts"
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  build:
+    # No arm64 runner needed: we only download pre-built Electron zips and
+    # npm native modules for the target arch, we don't compile anything.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    outputs:
+      version: ${{ steps.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y p7zip-full curl unzip tar dpkg-dev
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build ${{ matrix.arch }} (+ .deb)
+        id: build
+        run: |
+          set -euo pipefail
+          EXTRA_FLAGS=()
+          if [ -n "${{ github.event.inputs.electron_version }}" ]; then
+            EXTRA_FLAGS+=(--electron "${{ github.event.inputs.electron_version }}")
+          fi
+          deno run -A mimo-linux.ts \
+            --exe-url "${{ github.event.inputs.exe_url }}" \
+            --target-arch ${{ matrix.arch }} \
+            --deb -y \
+            "${EXTRA_FLAGS[@]}"
+
+      - name: Archive portable build
+        run: |
+          set -euo pipefail
+          OUTDIR=$(find . -maxdepth 1 -type d -name "*-linux-${{ matrix.arch }}" | head -n1)
+          tar -czf "$(basename "$OUTDIR").tar.gz" "$OUTDIR"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mimo-ai-linux-${{ matrix.arch }}
+          path: |
+            *-linux-${{ matrix.arch }}.tar.gz
+            *.deb
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: ${{ github.event.inputs.make_release == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mimo-ai-linux-${{ github.run_number }}
+          name: MiMo AI (Linux, unofficial) — run #${{ github.run_number }}
+          files: dist/**/*
