@@ -234,6 +234,77 @@ function isForeignPlatform(relPath: string): boolean {
   return /\.(dll|exe|dylib)$/.test(s);
 }
 
+// npm platform package names embed the target: "…-linux-x64[-variant]".
+const PLATFORM_PKG =
+  /-linux-(x64|arm64|ia32|armv7l|armv6l|ppc64le|s390x|mips64el|riscv64)(?:-|$)/;
+
+// Refuse to build if a platform native for a *different* architecture is
+// installed under node_modules. The first arm64 release shipped three x64
+// .node binaries this way and the app died on startup with "Cannot find
+// native binding" — the build itself was green, so nothing else caught it.
+async function assertNativesMatchArch(nmDir: string, arch: TargetArch) {
+  const wrong: string[] = [];
+  const scan = async (dir: string, prefix: string) => {
+    const entries: Deno.DirEntry[] = [];
+    for await (const e of Deno.readDir(dir)) entries.push(e);
+    for (const e of entries) {
+      if (!e.isDirectory) continue;
+      const name = prefix ? `${prefix}/${e.name}` : e.name;
+      if (e.name.startsWith("@")) {
+        await scan(join(dir, e.name), name);
+        continue;
+      }
+      if (!PLATFORM_PKG.test(e.name)) continue;
+      if (e.name.includes(`-linux-${arch}-`) || e.name.endsWith(`-linux-${arch}`)) {
+        continue;
+      }
+      // only a real install counts; the Windows payload leaves empty dirs
+      // behind for every platform it stripped, and those are harmless
+      if (await exists(join(dir, e.name, "package.json"))) wrong.push(name);
+    }
+  };
+  await scan(nmDir, "");
+  if (wrong.length === 0) return;
+  console.error(
+    `error: node_modules contains platform natives for the wrong architecture ` +
+      `(building for linux-${arch}):`,
+  );
+  for (const w of wrong) console.error(`  ${w}`);
+  console.error("these .node files cannot load here; fix the fetch filter.");
+  Deno.exit(1);
+}
+
+// Remove foreign-platform natives from a finished app.asar.unpacked tree and
+// collapse the directories that end up empty. Needed because @electron/asar's
+// createPackage writes every `unpack`-matching file into <dest>.unpacked
+// itself — filtering our own re-copy afterwards is too late to help.
+async function pruneForeignNatives(dir: string) {
+  let files = 0, bytes = 0;
+  const entries: Deno.DirEntry[] = [];
+  for await (const e of Deno.readDir(dir)) entries.push(e);
+  const subdirs: string[] = [];
+  for (const e of entries) {
+    const p = join(dir, e.name);
+    if (e.isDirectory) {
+      subdirs.push(p);
+      const r = await pruneForeignNatives(p);
+      files += r.files;
+      bytes += r.bytes;
+    } else if (isForeignPlatform(p)) {
+      bytes += (await Deno.stat(p)).size;
+      await Deno.remove(p);
+      files++;
+    }
+  }
+  // deepest first, so a chain of emptied parents collapses in one pass
+  for (const d of subdirs.reverse()) {
+    try {
+      if ([...Deno.readDirSync(d)].length === 0) await Deno.remove(d);
+    } catch { /* not empty, or already gone */ }
+  }
+  return { files, bytes };
+}
+
 // Drop every locale .pak except KEEP_LOCALES (Electron falls back to en-US).
 async function pruneLocales(installDir: string) {
   const dir = join(installDir, "locales");
@@ -860,7 +931,13 @@ if (import.meta.main) {
     const wants: string[] = [];
     await findMissingPkgs(nmDir, "", declared, wants);
     for (const name of wants) {
-      if (!name.includes("linux")) continue; // only platform backfills here
+      // Only the variant for the arch we are actually building. The Windows
+      // payload declares (and leaves an empty dir for) every platform, so
+      // without this an arm64 build fetches the *x64* native and ships a
+      // package whose .node files cannot load — which is exactly what the
+      // first arm64 release did (@napi-rs/canvas, @parcel/watcher and
+      // @lydell/node-pty all came out as linux-x64).
+      if (!name.includes(`linux-${arch}`)) continue;
       if (name.includes("musl")) continue; // glibc systems use the non-musl build
       if (await exists(join(nmDir, name, "package.json"))) continue;
       const ver = declared.get(name)!;
@@ -918,6 +995,7 @@ if (import.meta.main) {
       }
     }
   }
+  await assertNativesMatchArch(nmDir, arch);
 
   // ---------------------------------------------------------------------------
   // 6+7. repack app.asar + regenerate app.asar.unpacked
@@ -947,10 +1025,22 @@ if (import.meta.main) {
     }
   });
   console.log(
-    `[7/8] unpacked: ${copied}/${total}` +
-      (foreign ? ` (dropped, foreign-platform: ${foreign})` : "") +
+    `[7/8] unpacked: re-copied ${copied}/${total}` +
+      (foreign ? ` (not re-copied, foreign-platform: ${foreign})` : "") +
       (missing.length ? ` (skipped, other-platform: ${missing.length})` : ""),
   );
+  // …but createPackage already wrote every one of those foreign files into
+  // app.asar.unpacked, so the re-copy filter above changes nothing on disk.
+  // Sweep the finished tree for real.
+  {
+    const swept = await pruneForeignNatives(unpackedDir);
+    if (swept.files) {
+      console.log(
+        `      swept ${swept.files} foreign-platform files ` +
+          `(${(swept.bytes / 1048576).toFixed(1)} MiB) from app.asar.unpacked`,
+      );
+    }
+  }
   // NB: deliberately NOT copying the installer's app-update.yml. It points at
   // the Windows CDN (provider: generic, url: .../mimodesktopai/), so on Linux
   // the auto-updater would go looking for Windows installers. Leaving it out
@@ -965,9 +1055,14 @@ if (import.meta.main) {
     join(outDir, "mimo.sh"),
     `#!/usr/bin/env bash
 # Generated by mimo-linux.ts — do not hand-edit (re-run the script instead).
-# Resolves everything relative to its own location, so this directory stays
-# runnable after being moved or renamed.
-HERE="$(cd "$(dirname "$0")" && pwd)"
+# Resolves everything relative to its own real location, so this directory
+# stays runnable after being moved or renamed.
+#
+# readlink -f matters: the .deb puts a symlink at /usr/bin/xiaomi-mimo-ai
+# pointing here, and \`$0\` is the path the caller *typed*, not the file it
+# resolves to. A plain \`dirname "$0"\` therefore computes HERE=/usr/bin and
+# then fails looking for /usr/bin/electron.
+HERE="$(cd -P "$(dirname "$(readlink -f "$0")")" && pwd)"
 # Unset APPIMAGE: AppImage terminals (e.g. Zap) leak it into every child,
 # and the app mistakes a foreign APPIMAGE for its own install path.
 unset APPIMAGE APPDIR
@@ -1133,6 +1228,61 @@ Deno.test("BUILTINS covers node: and bare forms", () => {
     if (!BUILTINS.has(m)) throw new Error(`missing ${m}`);
   }
   if (BUILTINS.has("react")) throw new Error("react must not be builtin");
+});
+
+Deno.test("pruneForeignNatives: removes win32 tree, keeps linux, collapses dirs", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    const put = async (rel: string, data: string) => {
+      const p = join(root, rel);
+      await Deno.mkdir(dirname(p), { recursive: true });
+      await Deno.writeTextFile(p, data);
+    };
+    // a realistic app.asar.unpacked: linux natives that must survive, and the
+    // win32 leftovers @electron/asar writes on its own
+    await put("node_modules/onnxruntime-node/bin/napi-v6/linux/arm64/libonnxruntime.so.1", "x");
+    await put("node_modules/onnxruntime-node/bin/napi-v6/win32/x64/onnxruntime.dll", "x");
+    await put("node_modules/@napi-rs/canvas-linux-arm64-gnu/skia.linux-arm64-gnu.node", "x");
+    await put("node_modules/@napi-rs/canvas-win32-x64-msvc/skia.win32-x64-msvc.node", "x");
+    await put("node_modules/@napi-rs/canvas-win32-x64-msvc/icudtl.dat", "x");
+    await put("node_modules/@parcel/watcher-win32-x64/watcher.node", "x");
+    await put("node_modules/@lydell/node-pty-win32-x64/prebuilds/win32-x64/conpty/OpenConsole.exe", "x");
+
+    const r = await pruneForeignNatives(root);
+    if (r.files !== 5) throw new Error(`expected 5 swept, got ${r.files}`);
+
+    const left: string[] = [];
+    const walk = async (dir: string, prefix = "") => {
+      const entries: Deno.DirEntry[] = [];
+      for await (const e of Deno.readDir(dir)) entries.push(e);
+      for (const e of entries) {
+        const rel = prefix ? `${prefix}/${e.name}` : e.name;
+        if (e.isDirectory) await walk(join(dir, e.name), rel);
+        else left.push(rel);
+      }
+    };
+    await walk(root);
+    left.sort();
+    const want = [
+      "node_modules/@napi-rs/canvas-linux-arm64-gnu/skia.linux-arm64-gnu.node",
+      "node_modules/onnxruntime-node/bin/napi-v6/linux/arm64/libonnxruntime.so.1",
+    ];
+    if (left.join("|") !== want.join("|")) {
+      throw new Error(`survivors: ${left.join("|")}`);
+    }
+    // the win32-only package dirs must be gone, not left empty
+    for (
+      const gone of [
+        "node_modules/@napi-rs/canvas-win32-x64-msvc",
+        "node_modules/@parcel/watcher-win32-x64",
+        "node_modules/@lydell",
+      ]
+    ) {
+      if (await exists(join(root, gone))) throw new Error(`left behind: ${gone}`);
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
 
 Deno.test("walkHeader: nested traversal", () => {
