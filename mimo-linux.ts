@@ -538,9 +538,19 @@ Description: Unofficial Linux (Electron) port of Xiaomi MiMo AI
   );
 
   const debPath = `${outDir}-${debArch}.deb`;
-  await $`dpkg-deb --build --root-owner-group ${stageDir} ${debPath}`.quiet(
-    "stdout",
-  );
+  // dpkg-deb reports *why* it refused on stderr. dax captures that into the
+  // ShellError and only surfaces the exit code, which turns a real diagnosis
+  // ("path too long", "control file has bad permissions", ...) into a bare
+  // "Exited with code: 1". Keep the command quiet on success, but print its
+  // output when it fails so the cause is visible in CI logs.
+  const built = await $`dpkg-deb --build --root-owner-group ${stageDir} ${debPath}`
+    .noThrow();
+  if (built.code !== 0) {
+    const detail = `${built.stdout}${built.stderr}`.trim();
+    console.error(`dpkg-deb --build failed (exit ${built.code}) for ${stageDir}`);
+    if (detail) console.error(detail);
+    Deno.exit(1);
+  }
   await Deno.remove(stageDir, { recursive: true });
   console.log(`      wrote ${debPath}`);
 }
