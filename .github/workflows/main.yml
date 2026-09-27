@@ -85,6 +85,12 @@ jobs:
     needs: build
     if: ${{ github.event.inputs.make_release == 'true' }}
     runs-on: ubuntu-latest
+    # softprops/action-gh-release creates the tag + release through the
+    # GITHUB_TOKEN, so this job needs write access to repo contents. Without
+    # an explicit block it inherits the repo/org default, which may be
+    # read-only and fail the publish with a 403.
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:

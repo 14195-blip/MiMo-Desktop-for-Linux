@@ -84,6 +84,15 @@ const BUILTINS = new Set(
 );
 // Debian's own arch names differ from the ones electron/npm use.
 const DEB_ARCH: Record<TargetArch, string> = { x64: "amd64", arm64: "arm64" };
+// dpkg >= 1.22 defaults to zstd, which is fast but measurably bigger than xz
+// on this payload (same tree: 150.5 MB as zstd vs 133.6 MB as xz -9, ~11%).
+// xz -9 costs a few minutes of wall clock per arch at build time.
+const DEB_COMPRESSION = "xz";
+const DEB_COMPRESSION_LEVEL = "9";
+// Electron ships ~56 locale .pak files. MiMo is Chinese + English and Electron
+// falls back to en-US.pak for anything it can't find, so the rest (~44 MiB,
+// mostly ml/ta/kn/te/hi/bn) is dead weight. Add codes here to ship more.
+const KEEP_LOCALES = ["en-US", "zh-CN", "zh-TW"];
 // Generic Electron runtime deps on Debian/Ubuntu. Best-effort, not verified —
 // dpkg-deb won't check these actually resolve on the target system, so tune
 // this if `apt install ./*.deb` complains about unmet dependencies.
@@ -207,6 +216,43 @@ async function run(label: string, cmd: CommandBuilder): Promise<void> {
   console.error(`${label}: failed with exit code ${res.code}`);
   if (detail) console.error(detail);
   Deno.exit(1);
+}
+
+// True for native binaries that belong to a platform we are not building for.
+// The source is a *Windows* installer, so its app.asar.unpacked is full of
+// win32 natives (onnxruntime.dll, skia.win32-*.node, a second icudtl.dat,
+// node-pty's conpty/OpenConsole.exe, parcel watcher) — ~63 MiB that can never
+// load on Linux and used to be copied straight into the Linux build. The
+// matching linux-*-gnu natives are fetched from npm earlier in the run.
+// Matched on substrings because npm platform packages embed the platform in
+// the package name ("@napi-rs/canvas-win32-x64-msvc"), not as a path segment.
+function isForeignPlatform(relPath: string): boolean {
+  const s = relPath.toLowerCase();
+  if (s.includes("win32") || s.includes("darwin") || s.includes("-musl")) {
+    return true;
+  }
+  return /\.(dll|exe|dylib)$/.test(s);
+}
+
+// Drop every locale .pak except KEEP_LOCALES (Electron falls back to en-US).
+async function pruneLocales(installDir: string) {
+  const dir = join(installDir, "locales");
+  if (!await exists(dir)) return;
+  let dropped = 0, bytes = 0;
+  for await (const e of Deno.readDir(dir)) {
+    if (!e.isFile || !e.name.endsWith(".pak")) continue;
+    if (KEEP_LOCALES.includes(e.name.replace(/\.pak$/, ""))) continue;
+    const p = join(dir, e.name);
+    bytes += (await Deno.stat(p)).size;
+    await Deno.remove(p);
+    dropped++;
+  }
+  if (dropped) {
+    console.log(
+      `      locales: kept ${KEEP_LOCALES.join(", ")} — dropped ${dropped} ` +
+        `(${(bytes / 1048576).toFixed(1)} MiB)`,
+    );
+  }
 }
 
 // Resolve a working 7-Zip binary. On Ubuntu 24.04+ ("noble", incl. the
@@ -582,10 +628,14 @@ Description: Unofficial Linux (Electron) port of Xiaomi MiMo AI
   // dpkg-deb says *why* it refused on stderr; run() surfaces that on failure.
   await run(
     `dpkg-deb --build (${basename(debPath)})`,
-    $`dpkg-deb --build --root-owner-group ${stageDir} ${debPath}`,
+    $`dpkg-deb -Z ${DEB_COMPRESSION} -z ${DEB_COMPRESSION_LEVEL} --root-owner-group ${stageDir} ${debPath}`,
   );
   await Deno.remove(stageDir, { recursive: true });
-  console.log(`      wrote ${debPath}`);
+  console.log(
+    `      wrote ${debPath} (${
+      ((await Deno.stat(debPath)).size / 1048576).toFixed(1)
+    } MiB, ${DEB_COMPRESSION}-${DEB_COMPRESSION_LEVEL})`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -702,6 +752,11 @@ if (import.meta.main) {
     `unzip -o -q (${zipName})`,
     $`unzip -o -q ${zipPath} -d ${outDir}`,
   );
+  // Electron's fallback app: only used when resources/app.asar is missing,
+  // which can't happen here. Every other Electron packager strips it.
+  const defaultApp = join(outDir, "resources", "default_app.asar");
+  if (await exists(defaultApp)) await Deno.remove(defaultApp);
+  await pruneLocales(outDir);
 
   // ---------------------------------------------------------------------------
   // 5. extract app.asar + fetch missing linux natives
@@ -873,11 +928,15 @@ if (import.meta.main) {
   await createPackageWithOptions(srcDir, newAsar, { unpack: UNPACK_GLOB });
   const header = JSON.parse(getRawHeader(newAsar).headerString);
   const unpackedDir = join(resDir, "app.asar.unpacked");
-  let total = 0, copied = 0;
+  let total = 0, copied = 0, foreign = 0;
   const missing: string[] = [];
   walkHeader(header, "", (p, e) => {
     if (!e.unpacked) return;
     total++;
+    if (isForeignPlatform(p)) {
+      foreign++;
+      return;
+    }
     const s = join(srcDir, p), d = join(unpackedDir, p);
     try {
       Deno.mkdirSync(dirname(d), { recursive: true });
@@ -889,12 +948,13 @@ if (import.meta.main) {
   });
   console.log(
     `[7/8] unpacked: ${copied}/${total}` +
+      (foreign ? ` (dropped, foreign-platform: ${foreign})` : "") +
       (missing.length ? ` (skipped, other-platform: ${missing.length})` : ""),
   );
-  const appUpdate = join(appDir, "resources", "app-update.yml");
-  if (await exists(appUpdate)) {
-    await Deno.copyFile(appUpdate, join(resDir, "app-update.yml"));
-  }
+  // NB: deliberately NOT copying the installer's app-update.yml. It points at
+  // the Windows CDN (provider: generic, url: .../mimodesktopai/), so on Linux
+  // the auto-updater would go looking for Windows installers. Leaving it out
+  // disables the updater, which is what we want on a repack.
 
   // ---------------------------------------------------------------------------
   // 8. relocatable launcher + desktop file (both live INSIDE the build dir;
@@ -944,7 +1004,8 @@ StartupNotify=true
   menu:    copy mimo.desktop to ~/.local/share/applications/ (optional)
   profile: ~/.config/"Xiaomi MiMo AI"/   (kept across rebuilds)
   notes:   first screen is Xiaomi-account login (Google works);
-           in-app updates target Windows builds — ignore update prompts.`);
+           the Windows updater config is not shipped, so the app never
+           self-updates — reinstall to upgrade.`);
 
   // ---------------------------------------------------------------------------
   // 9. (optional) package as .deb for --target-arch
@@ -1038,6 +1099,33 @@ Deno.test("archName mapping", () => {
 Deno.test("DEB_ARCH mapping", () => {
   if (DEB_ARCH.x64 !== "amd64") throw new Error("x64");
   if (DEB_ARCH.arm64 !== "arm64") throw new Error("arm64");
+});
+
+Deno.test("isForeignPlatform: drops win32/darwin/musl, keeps linux", () => {
+  // these all shipped in the linux build before the filter existed
+  for (const p of [
+    "node_modules/onnxruntime-node/bin/napi-v6/win32/x64/onnxruntime.dll",
+    "node_modules/onnxruntime-node/bin/napi-v6/win32/x64/onnxruntime_binding.node",
+    "node_modules/@napi-rs/canvas-win32-x64-msvc/skia.win32-x64-msvc.node",
+    "node_modules/@napi-rs/canvas-win32-x64-msvc/icudtl.dat",
+    "node_modules/@parcel/watcher-win32-x64/watcher.node",
+    "node_modules/@lydell/node-pty-win32-x64/prebuilds/win32-x64/conpty/OpenConsole.exe",
+    "node_modules/@lydell/node-pty-win32-x64/prebuilds/win32-x64/conpty.node",
+    "node_modules/some-darwin-arm64/lib.dylib",
+    "node_modules/@napi-rs/canvas-linux-x64-musvg/skia.linux-x64-musl.node",
+  ]) {
+    if (!isForeignPlatform(p)) throw new Error(`should be foreign: ${p}`);
+  }
+  // the linux natives we actually want must survive
+  for (const p of [
+    "node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime.so.1",
+    "node_modules/onnxruntime-node/bin/napi-v6/linux/x64/onnxruntime_binding.node",
+    "node_modules/@napi-rs/canvas-linux-x64-gnu/skia.linux-x64-gnu.node",
+    "node_modules/@parcel/watcher-linux-x64-glibc/watcher.node",
+    "out/main/node.mjs",
+  ]) {
+    if (isForeignPlatform(p)) throw new Error(`should be kept: ${p}`);
+  }
 });
 
 Deno.test("BUILTINS covers node: and bare forms", () => {
