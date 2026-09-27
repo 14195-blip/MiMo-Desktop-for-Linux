@@ -97,15 +97,26 @@ const KEEP_LOCALES = ["en-US", "zh-CN", "zh-TW"];
 // dpkg-deb won't check these actually resolve on the target system, so tune
 // this if `apt install ./*.deb` complains about unmet dependencies.
 const DEB_DEPENDS = [
-  "libgtk-3-0",
+  // "a | b" alternatives: Ubuntu 24.04+ renamed these to *-t64 (the t64
+  // packages also Provide the old names, but spelling out both keeps the
+  // deb installable on old and new distros without relying on that).
+  "libgtk-3-0 | libgtk-3-0t64",
+  "libatspi2.0-0 | libatspi2.0-0t64",
   "libnotify4",
   "libnss3",
   "libxss1",
   "libxtst6",
   "xdg-utils",
-  "libatspi2.0-0",
   "libuuid1",
   "libsecret-1-0",
+  // The app bundles no fonts whatsoever (0 .ttf/.otf in the whole tree), so
+  // every glyph comes from the system. On a minimal install fontconfig's
+  // default sans-serif resolves to DejaVu, which has no CJK coverage, and a
+  // Chinese-first UI renders as tofu boxes.
+  "fontconfig",
+  "fonts-dejavu-core",
+  "fonts-noto-cjk",
+  "fonts-noto-color-emoji",
 ].join(", ");
 
 type TargetArch = "x64" | "arm64";
@@ -742,6 +753,27 @@ Description: Unofficial Linux (Electron) port of Xiaomi MiMo AI
 `,
   );
 
+  // Chromium's setuid sandbox helper has to be mode 4755 root:root, or the
+  // app can only ever run with --no-sandbox. A zip cannot carry the setuid
+  // bit, so the file arrives as 0755 — which matters because the app
+  // registers its own custom protocol against the electron binary directly,
+  // bypassing mimo.sh and its --no-sandbox. Without this, the deep link that
+  // should hand a sign-in token back to the app cannot start the app.
+  const postinst = join(pkgDebianDir, "postinst");
+  await Deno.writeTextFile(
+    postinst,
+    `#!/bin/sh
+set -e
+sandbox=${installRoot}/chrome-sandbox
+if [ -f "$sandbox" ]; then
+  chown root:root "$sandbox" 2>/dev/null || true
+  chmod 4755 "$sandbox" 2>/dev/null || true
+fi
+exit 0
+`,
+  );
+  await Deno.chmod(postinst, 0o755);
+
   const debPath = `${outDir}-${debArch}.deb`;
   // dpkg-deb says *why* it refused on stderr; run() surfaces that on failure.
   await run(
@@ -1115,8 +1147,17 @@ HERE="$(cd -P "$(dirname "$(readlink -f "$0")")" && pwd)"
 # Unset APPIMAGE: AppImage terminals (e.g. Zap) leak it into every child,
 # and the app mistakes a foreign APPIMAGE for its own install path.
 unset APPIMAGE APPDIR
-export TMPDIR="$HERE/tmp"
-mkdir -p "$TMPDIR"
+# Keep scratch files beside the app when we can (a portable build in a
+# user-owned directory), otherwise fall back to a per-user runtime dir. A
+# .deb install sits in root-owned /opt, and an unwritable TMPDIR makes
+# Chromium's cache and session writes fail — which is one way auth tokens
+# end up lost after a sign-in that actually succeeded in the browser.
+if mkdir -p "$HERE/tmp" 2>/dev/null && [ -w "$HERE/tmp" ]; then
+  export TMPDIR="$HERE/tmp"
+else
+  export TMPDIR="\${XDG_RUNTIME_DIR:-/tmp}/mimo-ai-$(id -u)"
+  mkdir -p "$TMPDIR" 2>/dev/null || export TMPDIR=/tmp
+fi
 exec "$HERE/electron" --no-sandbox "$@"
 `,
   );
