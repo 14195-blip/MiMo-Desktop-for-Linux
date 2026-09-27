@@ -187,6 +187,27 @@ async function need(tool: string) {
   }
 }
 
+// Resolve a working 7-Zip binary. On Ubuntu 24.04+ ("noble", incl. the
+// GitHub-hosted ubuntu-latest runner), `p7zip-full` is a transitional dummy
+// package (upstream p7zip is unmaintained) that no longer installs a `7z`
+// binary — it just pulls in the `7zip` package, whose binary is `7zz`.
+// Accept either name so this doesn't hard-fail on distros that already made
+// the switch, without requiring a symlink to be set up beforehand.
+let sevenZipBin = "";
+async function findSevenZip(): Promise<string> {
+  for (const candidate of ["7z", "7zz", "7zzs"]) {
+    const r = await $`command -v ${candidate}`.noThrow().quiet();
+    if (r.code === 0) return candidate;
+  }
+  console.error(
+    "missing required tool: 7z (also checked for 7zz)\n" +
+      "On Ubuntu 24.04+, `p7zip-full` is a transitional package that no " +
+      "longer provides a `7z` binary — install `7zip` instead " +
+      "(sudo apt-get install 7zip), or symlink 7zz -> 7z.",
+  );
+  return Deno.exit(1);
+}
+
 async function exists(p: string): Promise<boolean> {
   try {
     await Deno.stat(p);
@@ -522,9 +543,10 @@ Description: Unofficial Linux (Electron) port of Xiaomi MiMo AI
 
 if (import.meta.main) {
   const opts = parseArgs(Deno.args);
-  const requiredTools = ["7z", "curl", "npm", "unzip", "tar"];
+  const requiredTools = ["curl", "npm", "unzip", "tar"];
   if (opts.deb) requiredTools.push("dpkg-deb");
   for (const t of requiredTools) await need(t);
+  sevenZipBin = await findSevenZip();
 
   opts.exe = await ensureExe(opts);
   try {
@@ -571,7 +593,7 @@ if (import.meta.main) {
   // 1+2. NSIS -> app-*.7z -> windows payload
   // ---------------------------------------------------------------------------
   console.log("[1/8] extracting NSIS archive...");
-  await $`7z x -tNsis ${opts.exe} -o${extractDir}`.quiet("stdout");
+  await $`${sevenZipBin} x -tNsis ${opts.exe} -o${extractDir}`.quiet("stdout");
   const plugindir = join(extractDir, "$PLUGINSDIR");
   let inner7z = "";
   for await (const e of Deno.readDir(plugindir)) {
@@ -585,7 +607,7 @@ if (import.meta.main) {
   }
   if (!inner7z) throw new Error("app-*.7z not found in NSIS archive");
   console.log(`[2/8] extracting payload ${basename(inner7z)}...`);
-  await $`7z x ${inner7z} -o${appDir}`.quiet("stdout");
+  await $`${sevenZipBin} x ${inner7z} -o${appDir}`.quiet("stdout");
   const asarPath = join(appDir, "resources", "app.asar");
   if (!await exists(asarPath)) throw new Error("resources/app.asar missing");
 
