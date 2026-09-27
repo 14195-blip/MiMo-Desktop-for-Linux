@@ -180,8 +180,16 @@ function parseArgs(args: string[]): Opts {
 }
 
 async function need(tool: string) {
-  const r = await $`command -v ${tool}`.noThrow().quiet();
-  if (r.code !== 0) {
+  // Use dax's own `$.which` instead of shelling out to `command -v`.
+  // dax does not delegate to bash: it is a pure-JS shell whose builtin set is
+  // cd/printenv/echo/cat/exit/export/set/shopt/sleep/test/rm/mkdir/cp/mv/pwd/
+  // touch/unset/which — there is no `command` builtin. So `$\`command -v x\``
+  // resolves "command" as an ordinary executable, finds no binary by that name,
+  // and exits non-zero no matter which tool is being probed — which made this
+  // function report *every* tool as missing (curl, npm, ...) even on a runner
+  // where all of them were installed. `$.which` does the PATH lookup directly.
+  const found = await $.which(tool);
+  if (found == null) {
     console.error(`missing required tool: ${tool}`);
     Deno.exit(1);
   }
@@ -196,8 +204,8 @@ async function need(tool: string) {
 let sevenZipBin = "";
 async function findSevenZip(): Promise<string> {
   for (const candidate of ["7z", "7zz", "7zzs"]) {
-    const r = await $`command -v ${candidate}`.noThrow().quiet();
-    if (r.code === 0) return candidate;
+    // `$.which`, not `command -v` — see the note in need() above.
+    if (await $.which(candidate) != null) return candidate;
   }
   console.error(
     "missing required tool: 7z (also checked for 7zz)\n" +
