@@ -45,7 +45,7 @@
  * this script. See also .github/workflows/build-mimo-linux.yml for a fully
  * automated x64 + arm64 + .deb build.
  */
-import $ from "jsr:@david/dax@^0.50.0";
+import $, { type CommandBuilder } from "jsr:@david/dax@^0.50.0";
 import {
   createPackageWithOptions,
   extractFile,
@@ -193,6 +193,20 @@ async function need(tool: string) {
     console.error(`missing required tool: ${tool}`);
     Deno.exit(1);
   }
+}
+
+// Run a command with its output kept out of the log, but print what the tool
+// actually said when it fails. dax swallows a failed command's output into the
+// result and surfaces only the exit code, and `.quiet()` (no argument) silences
+// *both* streams — so a failure otherwise shows up as a bare
+// "ShellError: Exited with code: 1" with no cause at all.
+async function run(label: string, cmd: CommandBuilder): Promise<void> {
+  const res = await cmd.noThrow().quiet();
+  if (res.code === 0) return;
+  const detail = `${res.stdout}${res.stderr}`.trim();
+  console.error(`${label}: failed with exit code ${res.code}`);
+  if (detail) console.error(detail);
+  Deno.exit(1);
 }
 
 // Resolve a working 7-Zip binary. On Ubuntu 24.04+ ("noble", incl. the
@@ -373,11 +387,11 @@ async function npmFetch(spec: string, destName: string, destRoot: string) {
       e.isFile && e.name.endsWith(".tgz")
     );
     if (!tgz) throw new Error(`npm pack produced no tarball for ${spec}`);
-    await $`tar -xzf ${join(tmp, tgz.name)}`.cwd(tmp).quiet();
+    await run(`tar -xzf (${spec})`, $`tar -xzf ${join(tmp, tgz.name)}`.cwd(tmp));
     const dest = join(destRoot, destName);
     await Deno.mkdir(dest, { recursive: true });
     // package/* -> dest/
-    await $`cp -r ${join(tmp, "package")}/. ${dest}/`.quiet();
+    await run(`cp -r (${spec} -> ${destName})`, $`cp -r ${join(tmp, "package")}/. ${dest}/`);
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
@@ -493,7 +507,10 @@ async function buildDeb(
 
   // Copy the whole portable build tree in as-is: electron binary, resources/
   // (app.asar + app.asar.unpacked), mimo.sh, icon.png, mimo.desktop.
-  await $`cp -a ${outDir}/. ${pkgOptDir}/`.quiet();
+  await run(
+    `cp -a (${basename(outDir)} -> ${stageDir}/opt/mimo-ai)`,
+    $`cp -a ${outDir}/. ${pkgOptDir}/`,
+  );
 
   // mimo.sh locates itself via "$(dirname "$0")", so it works unmodified
   // from /opt/mimo-ai too — just put it on PATH.
@@ -538,19 +555,11 @@ Description: Unofficial Linux (Electron) port of Xiaomi MiMo AI
   );
 
   const debPath = `${outDir}-${debArch}.deb`;
-  // dpkg-deb reports *why* it refused on stderr. dax captures that into the
-  // ShellError and only surfaces the exit code, which turns a real diagnosis
-  // ("path too long", "control file has bad permissions", ...) into a bare
-  // "Exited with code: 1". Keep the command quiet on success, but print its
-  // output when it fails so the cause is visible in CI logs.
-  const built = await $`dpkg-deb --build --root-owner-group ${stageDir} ${debPath}`
-    .noThrow();
-  if (built.code !== 0) {
-    const detail = `${built.stdout}${built.stderr}`.trim();
-    console.error(`dpkg-deb --build failed (exit ${built.code}) for ${stageDir}`);
-    if (detail) console.error(detail);
-    Deno.exit(1);
-  }
+  // dpkg-deb says *why* it refused on stderr; run() surfaces that on failure.
+  await run(
+    `dpkg-deb --build (${basename(debPath)})`,
+    $`dpkg-deb --build --root-owner-group ${stageDir} ${debPath}`,
+  );
   await Deno.remove(stageDir, { recursive: true });
   console.log(`      wrote ${debPath}`);
 }
@@ -665,7 +674,10 @@ if (import.meta.main) {
   }
   await Deno.mkdir(outDir, { recursive: true });
   console.log("[4/8] unpacking electron...");
-  await $`unzip -o -q ${zipPath} -d ${outDir}`.quiet();
+  await run(
+    `unzip -o -q (${zipName})`,
+    $`unzip -o -q ${zipPath} -d ${outDir}`,
+  );
 
   // ---------------------------------------------------------------------------
   // 5. extract app.asar + fetch missing linux natives
@@ -803,10 +815,16 @@ if (import.meta.main) {
         const tgz = [...Deno.readDirSync(tmp)].find((e) =>
           e.name.endsWith(".tgz")
         )!;
-        await $`tar -xzf ${join(tmp, tgz.name)}`.cwd(tmp).quiet();
+        await run(
+          `tar -xzf (onnxruntime-node@${ver})`,
+          $`tar -xzf ${join(tmp, tgz.name)}`.cwd(tmp),
+        );
         await Deno.mkdir(dest, { recursive: true });
         const srcArch = join(tmp, "package/bin/napi-v6/linux", arch);
-        await $`cp -r ${srcArch}/. ${dest}/`.quiet();
+        await run(
+          `cp -r (onnxruntime-node linux/${arch} -> ${dest})`,
+          $`cp -r ${srcArch}/. ${dest}/`,
+        );
         const srcShared = join(tmp, "package/bin/napi-v6/linux");
         for await (const e of Deno.readDir(srcShared)) {
           if (e.isFile) {
