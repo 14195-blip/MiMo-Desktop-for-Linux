@@ -236,7 +236,34 @@ function isForeignPlatform(relPath: string): boolean {
 
 // npm platform package names embed the target: "…-linux-x64[-variant]".
 const PLATFORM_PKG =
-  /-linux-(x64|arm64|ia32|armv7l|armv6l|ppc64le|s390x|mips64el|riscv64)(?:-|$)/;
+  /-linux-(x64|arm64|ia32|armv7l|armv6l|ppc64le|s390x|mips64el|riscv64)(?=-|$)/;
+
+// Map a declared linux platform package onto the arch we are building.
+// The Windows payload only ever declares (and leaves an empty dir for) the
+// x64 variant, so filtering on the declared name alone finds nothing for an
+// arm64 build — it has to *ask* npm for e.g. @parcel/watcher-linux-arm64-glibc.
+// Returns null when the name is not a linux platform package.
+function archVariant(name: string, arch: TargetArch): string | null {
+  if (name.includes("musl")) return null;
+  if (!PLATFORM_PKG.test(name)) return null;
+  return name.replace(PLATFORM_PKG, `-linux-${arch}`);
+}
+
+// Pick a version that actually exists for `spec`: the one the payload
+// declares if that exact version is published for this arch, otherwise
+// whatever npm currently serves. Platform variants normally share the
+// declared version, but not always.
+async function resolveVersion(spec: string, declaredVer?: string) {
+  if (declaredVer) {
+    const r = await $`npm view ${spec}@${declaredVer} version`.noThrow().quiet();
+    if (r.code === 0 && r.stdout.trim()) return declaredVer;
+  }
+  const r = await $`npm view ${spec} version`.noThrow().quiet();
+  if (r.code !== 0 || !r.stdout.trim()) {
+    throw new Error(`no version of ${spec} is available on npm`);
+  }
+  return r.stdout.trim().split("\n").pop()!.trim();
+}
 
 // Refuse to build if a platform native for a *different* architecture is
 // installed under node_modules. The first arm64 release shipped three x64
@@ -931,18 +958,20 @@ if (import.meta.main) {
     const wants: string[] = [];
     await findMissingPkgs(nmDir, "", declared, wants);
     for (const name of wants) {
-      // Only the variant for the arch we are actually building. The Windows
-      // payload declares (and leaves an empty dir for) every platform, so
-      // without this an arm64 build fetches the *x64* native and ships a
-      // package whose .node files cannot load — which is exactly what the
-      // first arm64 release did (@napi-rs/canvas, @parcel/watcher and
-      // @lydell/node-pty all came out as linux-x64).
-      if (!name.includes(`linux-${arch}`)) continue;
-      if (name.includes("musl")) continue; // glibc systems use the non-musl build
-      if (await exists(join(nmDir, name, "package.json"))) continue;
-      const ver = declared.get(name)!;
-      console.log(`      fetching declared ${name}@${ver}...`);
-      await npmFetch(`${name}@${ver}`, name, nmDir);
+      // The Windows payload declares (and leaves an empty dir for) every
+      // platform it shipped — in practice the win32 and x64 variants. Fetch
+      // the variant for the arch we are actually building: the first arm64
+      // release shipped three *x64* .node files and the app died on startup
+      // with "Cannot find native binding", while the build stayed green.
+      const target = archVariant(name, arch);
+      if (target == null) continue;
+      if (await exists(join(nmDir, target, "package.json"))) continue;
+      const ver = await resolveVersion(
+        target,
+        declared.get(target) ?? declared.get(name),
+      );
+      console.log(`      fetching declared ${target}@${ver}...`);
+      await npmFetch(`${target}@${ver}`, target, nmDir);
     }
   }
   // onnxruntime-node ships ALL platform binaries inside the single package
@@ -1228,6 +1257,22 @@ Deno.test("BUILTINS covers node: and bare forms", () => {
     if (!BUILTINS.has(m)) throw new Error(`missing ${m}`);
   }
   if (BUILTINS.has("react")) throw new Error("react must not be builtin");
+});
+
+Deno.test("archVariant: remaps declared x64 packages onto the target arch", () => {
+  const cases: Array<[string, TargetArch, string | null]> = [
+    ["@parcel/watcher-linux-x64-glibc", "arm64", "@parcel/watcher-linux-arm64-glibc"],
+    ["@napi-rs/canvas-linux-x64-gnu", "arm64", "@napi-rs/canvas-linux-arm64-gnu"],
+    ["@lydell/node-pty-linux-x64", "arm64", "@lydell/node-pty-linux-arm64"],
+    ["@napi-rs/canvas-linux-arm64-gnu", "x64", "@napi-rs/canvas-linux-x64-gnu"],
+    ["@napi-rs/canvas-linux-x64-musl", "arm64", null],
+    ["onnxruntime-node", "arm64", null],
+    ["@parcel/watcher-win32-x64-msvc", "arm64", null],
+  ];
+  for (const [name, arch, want] of cases) {
+    const got = archVariant(name, arch);
+    if (got !== want) throw new Error(`${name} -> ${got}, want ${want}`);
+  }
 });
 
 Deno.test("pruneForeignNatives: removes win32 tree, keeps linux, collapses dirs", async () => {
