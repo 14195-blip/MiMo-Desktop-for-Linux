@@ -93,15 +93,33 @@ const DEB_COMPRESSION_LEVEL = "9";
 // falls back to en-US.pak for anything it can't find, so the rest (~44 MiB,
 // mostly ml/ta/kn/te/hi/bn) is dead weight. Add codes here to ship more.
 const KEEP_LOCALES = ["en-US", "zh-CN", "zh-TW"];
-// Generic Electron runtime deps on Debian/Ubuntu. Best-effort, not verified —
-// dpkg-deb won't check these actually resolve on the target system, so tune
-// this if `apt install ./*.deb` complains about unmet dependencies.
+// Electron's runtime libraries. Ubuntu 24.04+ moved a batch of these to
+// *-t64 (the 64-bit time_t transition); the t64 packages also Provide the old
+// names, but spelling out both keeps the deb installable on either side of
+// the rename without depending on that.
+//
+// This list is verified rather than guessed: the CI smoke job runs
+// `ldd electron | grep "not found"` inside a clean container, so a missing
+// library fails the build instead of shipping a .deb that cannot start. The
+// first release did exactly that — libasound2 and libcups2 are not part of
+// the GTK3 dependency closure, so the .deb installed cleanly and then died
+// with "libasound.so.2: cannot open shared object file" on every clean
+// system. It only worked on the machine it was tested on, which already had
+// those libraries.
 const DEB_DEPENDS = [
-  // "a | b" alternatives: Ubuntu 24.04+ renamed these to *-t64 (the t64
-  // packages also Provide the old names, but spelling out both keeps the
-  // deb installable on old and new distros without relying on that).
   "libgtk-3-0 | libgtk-3-0t64",
   "libatspi2.0-0 | libatspi2.0-0t64",
+  "libatk-bridge2.0-0 | libatk-bridge2.0-0t64",
+  "libcups2 | libcups2t64",
+  "libasound2 | libasound2t64",
+  "libdrm2",
+  "libgbm1",
+  "libxcomposite1",
+  "libxdamage1",
+  "libxfixes3",
+  "libxrandr2",
+  "libxshmfence1",
+  "libxkbcommon0",
   "libnotify4",
   "libnss3",
   "libxss1",

@@ -176,6 +176,20 @@ jobs:
           fi
           stat -c '%A %U:%G' /opt/mimo-ai/chrome-sandbox
 
+          # The assertion that matters most: the dynamic loader reports only
+          # the FIRST library it cannot find, so a launch failure names one
+          # missing .so at a time and the rest stay hidden. ldd lists them
+          # all. This is what caught the undeclared libasound2/libcups2.
+          echo "--- every shared library resolves ---"
+          missing=$(ldd /opt/mimo-ai/electron | awk '/not found/{print $1}')
+          if [ -n "$missing" ]; then
+            echo "FAIL: undeclared shared libraries:"
+            echo "$missing"
+            echo "add the providing package(s) to DEB_DEPENDS in mimo-linux.ts"
+            exit 1
+          fi
+          echo "all resolved"
+
           echo "--- launch ---"
           # No display in the container, so this exits at the X11 stage. That
           # is fine: it only gets there after the engine boots, so reaching
