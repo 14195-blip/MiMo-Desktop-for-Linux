@@ -245,7 +245,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          built="$(dpkg-deb -f dist/*/*.deb Version | head -1)"
+          # One deb only — dpkg-deb -f takes a single file, and the glob
+          # matches both arches.
+          deb="$(find dist -name '*.deb' -type f | sort | head -1)"
+          if [ -z "$deb" ]; then echo "no .deb found under dist/" >&2; exit 1; fi
+          built="$(dpkg-deb -f "$deb" Version)"
           latest="$(gh release view --json tagName -q .tagName 2>/dev/null || true)"
           echo "built:    v$built"
           echo "released: ${latest:-<none>}"
@@ -291,7 +295,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          version="$(dpkg-deb -f dist/*/*.deb Version | head -1)"
+          # Pick ONE deb first: the glob matches both arches, and
+          # `dpkg-deb -f a.deb b.deb Version` takes a single file, so expanding
+          # it inline yields an empty version and an invalid tag.
+          deb="$(find dist -name '*.deb' -type f | sort | head -1)"
+          if [ -z "$deb" ]; then echo "no .deb found under dist/" >&2; exit 1; fi
+          version="$(dpkg-deb -f "$deb" Version)"
+          if [ -z "$version" ]; then echo "could not read Version from $deb" >&2; exit 1; fi
           tag="v${version}"
           if gh release view "$tag" >/dev/null 2>&1; then
             tag="v${version}-run.${{ github.run_number }}"
