@@ -26,11 +26,11 @@ Grab the one matching your architecture from the
 sudo apt install ./XiaomiMiMo-AI-latest-x64-linux-x64-amd64.deb
 ```
 
-That installs to `/opt/mimo-ai`, puts `xiaomi-mimo-ai` on your `PATH` and drops
+That installs to `/opt/mimo-ai`, puts `mimo-desktop` on your `PATH` and drops
 a menu entry in your application list. Then:
 
 ```sh
-xiaomi-mimo-ai
+mimo-desktop
 ```
 
 Or launch **Xiaomi MiMo AI** from your desktop's application menu.
@@ -91,11 +91,28 @@ directory. Expect it to take a few minutes.
 
 ## Continuous builds
 
-The workflow builds x64 and arm64 in parallel, runs the script's unit tests as
-a gate, and **rebuilds every Monday**. Scheduled runs never publish — they
-exist so that upstream breakage shows up as a red build instead of a surprise
+The workflow builds x64 and arm64 in parallel and runs four jobs:
+
+| job | what it does |
+|---|---|
+| `test` | `deno test`, which also type-checks the script |
+| `build` | produces the portable tree and `.deb` for both arches |
+| `smoke` | installs the real `.deb` in clean containers and launches it |
+| `drift` | weekly only: files an issue if upstream moved |
+
+`smoke` runs against both **Ubuntu 22.04 and 24.04**, because 24.04 renamed
+`libgtk-3-0`/`libatspi2.0-0` to their `-t64` versions and the `.deb` declares
+both spellings — installing on each side of that rename is what keeps the
+dependency list honest. It also asserts that CJK fonts resolve to Noto rather
+than DejaVu (the app bundles no fonts, so that is the difference between text
+and tofu), that `chrome-sandbox` ended up setuid, and that the app reaches its
+local API listener without a native-module error.
+
+The build runs automatically **every Monday**. Scheduled runs never publish —
+they exist so upstream breakage shows up as a red build instead of a surprise
 months later. To cut a release, dispatch the workflow manually with
-`make_release` checked.
+`make_release` checked. Releases are tagged with the upstream version
+(`v26.924.240030`), so the tag is directly comparable to what the app reports.
 
 Available inputs:
 
@@ -107,10 +124,24 @@ Available inputs:
 
 ## Known limitations
 
-- **No auto-update.** The upstream update configuration points at a Windows CDN,
-  so it is deliberately not shipped. Reinstall to upgrade. (An
-  `electron-updater` dependency is present, so a Linux updater is possible — it
-  just isn't configured.)
+- **No auto-update, and it cannot be fixed from here.** The app does ship an
+  `electron-updater` dependency and a per-platform update manager, but on Linux
+  that manager only activates when `APPIMAGE` is set in the environment, and
+  the feed URL it checks is fetched at runtime from MiMo's own remote config
+  rather than from anything in the package. A directory or `.deb` install
+  therefore never checks for updates, and no `app-update.yml` we could ship
+  would change that — the app overrides the feed URL itself. Reinstall to
+  upgrade.
+- **Runs unsandboxed by default.** The `.deb` does set up Chromium's setuid
+  sandbox helper, but a working sandbox also needs kernel namespace support
+  that containers, PRoot and some VMs lack — there it aborts the process
+  outright. Since "no sandbox" beats "does not start", the sandbox is opt-in:
+
+  ```sh
+  MIMO_SANDBOX=1 mimo-desktop
+  ```
+
+  On an ordinary Linux desktop this should work and is worth using.
 - **glibc only.** musl/Alpine is intentionally skipped; the build fetches the
   `-gnu` native modules.
 - **Sign-in uses a self-signed loopback certificate.** The app serves its OAuth
@@ -124,6 +155,7 @@ Available inputs:
 
 ## Credits
 
+* **Maintainer** — ShinZero <yousef2010.mahmoud@gmail.com>.
 * **MiMo AI** — © Xiaomi. The application code, assets and services are theirs.
 * **Electron / Chromium** — MIT, BSD-3-Clause and other permissive licences; the
   full third-party licence text ships inside every build as

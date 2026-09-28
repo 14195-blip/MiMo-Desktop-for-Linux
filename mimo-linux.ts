@@ -688,7 +688,7 @@ async function buildDeb(
 ) {
   const debArch = DEB_ARCH[arch];
   console.log(`[deb] building .deb (${debArch})...`);
-  const pkgName = "xiaomi-mimo-ai";
+  const pkgName = "mimo-desktop";
   const installRoot = "/opt/mimo-ai";
   const stageDir = `${outDir}.deb-stage`;
 
@@ -711,8 +711,8 @@ async function buildDeb(
   // (app.asar + app.asar.unpacked), mimo.sh, icon.png, mimo.desktop.
   await copyTree(outDir, pkgOptDir);
 
-  // mimo.sh locates itself via "$(dirname "$0")", so it works unmodified
-  // from /opt/mimo-ai too — just put it on PATH.
+  // mimo.sh locates itself via readlink -f, so it works unmodified from
+  // /opt/mimo-ai and through the symlink below — just put it on PATH.
   const binLink = join(pkgBinDir, pkgName);
   try {
     await Deno.remove(binLink);
@@ -745,7 +745,7 @@ Section: utils
 Priority: optional
 Architecture: ${debArch}
 Depends: ${DEB_DEPENDS}
-Maintainer: Unofficial Port <noreply@example.com>
+Maintainer: ShinZero <yousef2010.mahmoud@gmail.com>
 Description: Unofficial Linux (Electron) port of Xiaomi MiMo AI
  Repackaged from the official Windows installer by mimo-linux.ts.
  Not affiliated with or endorsed by Xiaomi. Adjust Depends in this script
@@ -1139,7 +1139,7 @@ if (import.meta.main) {
 # Resolves everything relative to its own real location, so this directory
 # stays runnable after being moved or renamed.
 #
-# readlink -f matters: the .deb puts a symlink at /usr/bin/xiaomi-mimo-ai
+# readlink -f matters: the .deb puts a symlink at /usr/bin/mimo-desktop
 # pointing here, and \`$0\` is the path the caller *typed*, not the file it
 # resolves to. A plain \`dirname "$0"\` therefore computes HERE=/usr/bin and
 # then fails looking for /usr/bin/electron.
@@ -1157,6 +1157,16 @@ if mkdir -p "$HERE/tmp" 2>/dev/null && [ -w "$HERE/tmp" ]; then
 else
   export TMPDIR="\${XDG_RUNTIME_DIR:-/tmp}/mimo-ai-$(id -u)"
   mkdir -p "$TMPDIR" 2>/dev/null || export TMPDIR=/tmp
+fi
+# Chromium's sandbox needs both its setuid helper *and* kernel support for
+# the namespaces it clones. Containers, PRoot and some VMs ship the setuid
+# helper but not the namespaces, and there the sandbox aborts the process
+# outright (FATAL, "Trace/breakpoint trap") — so auto-detecting the helper
+# and sandboxing would turn a working unsandboxed launch into no launch at
+# all. Worse failure, so the sandbox is opt-in:
+#   MIMO_SANDBOX=1 mimo-desktop
+if [ "\${MIMO_SANDBOX:-0}" = "1" ]; then
+  exec "$HERE/electron" "$@"
 fi
 exec "$HERE/electron" --no-sandbox "$@"
 `,

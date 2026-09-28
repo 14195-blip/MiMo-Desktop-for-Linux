@@ -6,6 +6,10 @@ The MIT licence in [LICENSE](LICENSE) covers **only the source files in this
 repository** — currently `mimo-linux.ts` and `mimo-bootstrap.sh`. It does not
 cover, and grants no rights to, any binary artifact produced by running them.
 
+## Maintainer
+
+ShinZero <yousef2010.mahmoud@gmail.com>.
+
 ## Unofficial status
 
 This is an **unofficial, community** project. It is not affiliated with,
