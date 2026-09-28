@@ -107,6 +107,20 @@ jobs:
           # .exe, and the whole point of the schedule is to notice when
           # upstream moves. Only the Deno module cache is reused.
 
+      - name: Archive portable build
+        run: |
+          set -euo pipefail
+          OUTDIR=$(find . -maxdepth 1 -type d -name "*-linux-${{ matrix.arch }}" | head -n1)
+          tar -czf "$(basename "$OUTDIR").tar.gz" "$OUTDIR"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mimo-ai-linux-${{ matrix.arch }}
+          path: |
+            *-linux-${{ matrix.arch }}.tar.gz
+            *.deb
+          if-no-files-found: error
+
   # Installs the real .deb in a clean container and checks the things that
   # have actually broken before: unresolvable Depends, missing CJK fonts, a
   # postinst that did not run, and a native module that will not load. The
