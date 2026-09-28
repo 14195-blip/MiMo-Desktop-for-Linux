@@ -129,13 +129,17 @@ jobs:
   smoke:
     needs: build
     runs-on: ubuntu-latest
+    # TEMPORARY: gathering data on which distros can actually run the build.
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        # 22.04 still ships libgtk-3-0 / libatspi2.0-0 under the old names;
-        # 24.04 only has the *t64 replacements. Installing on both proves the
-        # "a | b" alternatives in Depends resolve on either side of the rename.
-        distro: ["ubuntu:22.04", "ubuntu:24.04"]
+        distro:
+          - "ubuntu:22.04"
+          - "ubuntu:24.04"
+          - "ubuntu:24.10"
+          - "ubuntu:25.04"
+          - "ubuntu:25.10"
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -189,6 +193,16 @@ jobs:
             exit 1
           fi
           echo "all resolved"
+
+          echo "--- alsa-lib diagnostics ---"
+          . /etc/os-release; echo "distro=$PRETTY_NAME"
+          dpkg-query -W -f='${Package} ${Version}\n' 'libasound2*' 2>/dev/null || true
+          alsa=$(ldconfig -p | awk '/libasound\.so\.2/{print $NF; exit}')
+          echo "libasound=$alsa"
+          if [ -n "$alsa" ]; then
+            nm -D "$alsa" 2>/dev/null | grep -c snd_device_name_get_hint \
+              | sed 's/^/snd_device_name_get_hint symbols: /'
+          fi
 
           echo "--- launch ---"
           # No display in the container, so this exits at the X11 stage. That
