@@ -129,17 +129,21 @@ jobs:
   smoke:
     needs: build
     runs-on: ubuntu-latest
-    # TEMPORARY: gathering data on which distros can actually run the build.
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        distro:
-          - "ubuntu:22.04"
-          - "ubuntu:24.04"
-          - "ubuntu:24.10"
-          - "ubuntu:25.04"
-          - "ubuntu:25.10"
+        # Only distros this build is actually verified on. Measured, not
+        # assumed — see the "Runs where?" note in README.md:
+        #   22.04  libasound2      1.2.6.1   works
+        #   24.04  libasound2t64   1.2.11    FAILS
+        #   25.04  libasound2t64             FAILS
+        #   25.10  libasound2t64   1.2.14    works
+        # 24.04 and 25.04 fail with
+        #   undefined symbol: snd_device_name_get_hint, version ALSA_0.9
+        # which is Electron 41 against Ubuntu's t64 libasound, not something
+        # the packaging can fix. 24.10 is omitted: it is EOL and its repos
+        # have moved to old-releases.ubuntu.com, so it cannot be tested.
+        distro: ["ubuntu:22.04", "ubuntu:25.10"]
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -194,10 +198,7 @@ jobs:
           fi
           echo "all resolved"
 
-          echo "--- alsa-lib diagnostics ---"
-          # Only dpkg, no binutils: nm is not present in the base image and a
-          # missing tool under `set -o pipefail` would abort the whole test.
-          # The app's own runtime error is the authoritative signal anyway.
+          echo "--- environment (context when this fails) ---"
           . /etc/os-release; echo "distro=$PRETTY_NAME"
           dpkg-query -W -f='${Package} ${Version}\n' 'libasound2*' 2>/dev/null || true
 

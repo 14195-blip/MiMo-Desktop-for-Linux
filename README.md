@@ -100,13 +100,13 @@ The workflow builds x64 and arm64 in parallel and runs four jobs:
 | `smoke` | installs the real `.deb` in clean containers and launches it |
 | `drift` | weekly only: files an issue if upstream moved |
 
-`smoke` runs against both **Ubuntu 22.04 and 24.04**, because 24.04 renamed
-`libgtk-3-0`/`libatspi2.0-0` to their `-t64` versions and the `.deb` declares
-both spellings — installing on each side of that rename is what keeps the
-dependency list honest. It also asserts that CJK fonts resolve to Noto rather
-than DejaVu (the app bundles no fonts, so that is the difference between text
-and tofu), that `chrome-sandbox` ended up setuid, and that the app reaches its
-local API listener without a native-module error.
+`smoke` runs against **Ubuntu 22.04 and 25.10** — the two distros this build is
+verified on — and it does the things that have actually broken before: install
+the real `.deb` in a clean container, check every shared library resolves
+(`ldd`, because the loader only ever reports the *first* missing one), check
+the CJK font resolves to Noto rather than DejaVu, check `chrome-sandbox`
+ended up setuid, and confirm the app reaches its local API listener with no
+native-module error.
 
 The build runs automatically **every Monday**. Scheduled runs never publish —
 they exist so upstream breakage shows up as a red build instead of a surprise
@@ -124,6 +124,20 @@ Available inputs:
 
 ## Known limitations
 
+- **Runs where?** Verified by the CI smoke job on **Ubuntu 22.04 and 25.10**.
+  It does **not** run on **24.04 or 25.04**, which fail at startup with:
+
+  ```
+  electron: symbol lookup error: undefined symbol: snd_device_name_get_hint, version ALSA_0.9
+  ```
+
+  That is Electron 41 against Ubuntu's `libasound2t64`, and it is not a
+  packaging problem — the library is present and resolves, it just lacks a
+  symbol version the binary needs. Oddly it is not monotonic in the alsa-lib
+  version: 22.04 (alsa-lib 1.2.6.1) works and 25.10 (1.2.14) works, while
+  24.04 (1.2.11) and 25.04 do not, so there is no honest version constraint
+  to put in `Depends`. Fixing it would mean shipping a private `libasound`,
+  which we are not doing. If you are on 24.04, upgrade to 25.10.
 - **No auto-update, and it cannot be fixed from here.** The app does ship an
   `electron-updater` dependency and a per-platform update manager, but on Linux
   that manager only activates when `APPIMAGE` is set in the environment, and
