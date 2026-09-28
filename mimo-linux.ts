@@ -42,8 +42,8 @@
  *
  * Bootstrapping (Deno itself, 7z, dpkg-deb, ...) on a fresh machine or CI:
  * see mimo-bootstrap.sh, which installs whatever's missing and then calls
- * this script. See also .github/workflows/build-mimo-linux.yml for a fully
- * automated x64 + arm64 + .deb build.
+ * this script. See also .github/workflows/main.yml for a fully automated
+ * x64 + arm64 + .deb build (unit tests, scheduled rebuilds, releases).
  */
 import $, { type CommandBuilder } from "jsr:@david/dax@^0.50.0";
 import {

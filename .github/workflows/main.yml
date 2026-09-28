@@ -17,6 +17,15 @@ on:
         required: false
         default: false
 
+  # The upstream installer URL is a `-latest-` pointer, so a new Xiaomi build
+  # can land at any time. Rebuild weekly to catch upstream breakage early.
+  # Scheduled runs build + test only: `make_release` has no value on a
+  # schedule event, so the release job is skipped and publishing stays an
+  # explicit human decision. A failure here is the drift alarm.
+  schedule:
+    # Mondays 04:37 UTC — off the hour, when cron load is lightest.
+    - cron: "37 4 * * 1"
+
 jobs:
   # Fast gate: type-checks the script and runs its inline unit tests. Keeps
   # regressions in the packaging logic (platform filters, path handling)
@@ -69,14 +78,22 @@ jobs:
 
       - name: Build ${{ matrix.arch }} (+ .deb)
         id: build
+        env:
+          # Empty on a `schedule` run (github.event.inputs only exists for
+          # workflow_dispatch), so every input needs a shell-side default or
+          # the scheduled build would pass --exe-url "" and die immediately.
+          INPUT_EXE_URL: ${{ github.event.inputs.exe_url }}
+          INPUT_ELECTRON: ${{ github.event.inputs.electron_version }}
         run: |
           set -euo pipefail
+          EXE_URL="${INPUT_EXE_URL:-https://mimocode-cdn.xiaomimimo.com/mimocode/mimodesktopai/XiaomiMiMo-AI-latest-x64-setup.exe}"
+          ELECTRON_VERSION="${INPUT_ELECTRON// /}"
           EXTRA_FLAGS=()
-          if [ -n "${{ github.event.inputs.electron_version }}" ]; then
-            EXTRA_FLAGS+=(--electron "${{ github.event.inputs.electron_version }}")
+          if [ -n "$ELECTRON_VERSION" ]; then
+            EXTRA_FLAGS+=(--electron "$ELECTRON_VERSION")
           fi
           deno run -A mimo-linux.ts \
-            --exe-url "${{ github.event.inputs.exe_url }}" \
+            --exe-url "$EXE_URL" \
             --target-arch ${{ matrix.arch }} \
             --deb -y \
             "${EXTRA_FLAGS[@]}"

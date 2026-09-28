@@ -1,0 +1,43 @@
+# NOTICE
+
+## Scope of the LICENSE in this repository
+
+The MIT licence in [LICENSE](LICENSE) covers **only the source files in this
+repository** — currently `mimo-linux.ts` and `mimo-bootstrap.sh`. It does not
+cover, and grants no rights to, any binary artifact produced by running them.
+
+## Unofficial status
+
+This is an **unofficial, community** project. It is not affiliated with,
+endorsed by, sponsored by, or connected to Xiaomi Corporation or any of its
+subsidiaries. "MiMo AI" and "Xiaomi" are trademarks of their respective owner
+and are used here only to identify the software this project repackages.
+
+The maintainers do not control the upstream application, its servers, its
+accounts or its update channel, and cannot make commitments on its behalf.
+
+## Third-party components in the build output
+
+Each released artifact is a bundle containing components with their own
+licences:
+
+* **MiMo AI application code, assets and branding** — © Xiaomi. Redistributed
+  unmodified from Xiaomi's publicly distributed Windows installer. Its own terms
+  of service apply to your use of it; this project cannot grant you rights to
+  it. Do not redistribute a build if Xiaomi's terms forbid it.
+* **Electron and Chromium** — a mixture of MIT, BSD-3-Clause, ISC and other
+  permissive licences. The complete third-party licence text is shipped inside
+  every build as `LICENSES.chromium.html`, and must be kept intact.
+* **Native npm modules** (`onnxruntime-node`, `@napi-rs/canvas`,
+  `@parcel/watcher`, `@lydell/node-pty`, `node-machine-id`) — fetched from the
+  public npm registry at build time under their respective licences.
+* **System packages** pulled in as `.deb` dependencies (Electron's GTK/NSS/X11
+  runtime libraries, Noto fonts) — installed by your distribution's package
+  manager under their own licences.
+
+## No warranty
+
+Everything here is provided "as is", with no warranty of any kind. The builds
+are produced unattended in CI from an upstream artifact that changes without
+notice. Verify what you install, and do not use these builds for anything you
+would not risk running the official Windows application for.
