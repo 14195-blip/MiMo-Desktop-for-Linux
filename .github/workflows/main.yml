@@ -145,14 +145,16 @@ jobs:
       - name: Install and launch
         run: |
           set -euo pipefail
-          deb="$(ls "$PWD"/smoke/*.deb)"
-          docker run --rm -v "$deb:/tmp/mimo.deb:ro" "${{ matrix.distro }}" bash -s <<'CONTAINER'
+          # The container script goes in as a *file*, not on stdin: `docker run`
+          # only forwards stdin with -i, and without it `bash -s` reads nothing,
+          # exits 0 and the whole smoke test passes without testing anything.
+          cat > smoke.sh <<'SMOKE'
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -qq
           # A failure here IS the assertion: it means a Depends entry cannot
           # be satisfied on this distro.
-          apt-get install -y -qq /tmp/mimo.deb >/dev/null
+          apt-get install -y -qq /artifacts/mimo.deb >/dev/null
           echo "--- installed ---"
           dpkg-query -W -f='${Status} ${Version}\n' mimo-desktop
 
@@ -190,7 +192,12 @@ jobs:
             *) echo "FAIL: app never reached its local API server"; exit 1 ;;
           esac
           echo "--- OK ---"
-          CONTAINER
+          SMOKE
+          cp "$(ls "$PWD"/smoke/*.deb)" "$PWD/smoke/mimo.deb"
+          docker run --rm \
+            -v "$PWD/smoke:/artifacts:ro" \
+            -v "$PWD/smoke.sh:/smoke.sh:ro" \
+            "${{ matrix.distro }}" bash /smoke.sh
 
   # Weekly upstream-drift alarm. The release tag is the upstream version
   # (see the release job), so comparing it to the version in this build is a
