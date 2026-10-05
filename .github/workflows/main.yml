@@ -110,7 +110,11 @@ jobs:
       - name: Archive portable build
         run: |
           set -euo pipefail
-          OUTDIR=$(find . -maxdepth 1 -type d -name "*-linux-${{ matrix.arch }}" | head -n1)
+          OUTDIR="$(find . -maxdepth 1 -type d -name "*-linux-${{ matrix.arch }}" -print -quit)"
+          if [ -z "$OUTDIR" ]; then
+            echo "no portable build directory found for ${{ matrix.arch }}" >&2
+            exit 1
+          fi
           tar -czf "$(basename "$OUTDIR").tar.gz" "$OUTDIR"
 
       - uses: actions/upload-artifact@v4
@@ -260,14 +264,16 @@ jobs:
           echo "::notice::upstream moved to v$built (newest release is ${latest:-none})"
           gh issue create \
             --title "Upstream MiMo AI v$built available (newest release: ${latest:-none})" \
-            --body "$(printf '%s\n' \
-              "The scheduled rebuild found a newer upstream version." \
-              "" \
-              "- This build: \`v$built\`" \
-              "- Newest release: \`${latest:-none}\`" \
-              "" \
-              "See the run log for the full build output. If it looks healthy, cut a" \
-              "release by dispatching the workflow manually with \`make_release\`.") \
+            --body "$(cat <<EOF
+          The scheduled rebuild found a newer upstream version.
+
+          - This build: \`v$built\`
+          - Newest release: \`${latest:-none}\`
+
+          See the run log for the full build output. If it looks healthy, cut a
+          release by dispatching the workflow manually with \`make_release\`.
+          EOF
+          )" \
             || echo "::warning::could not open the drift issue"
 
   release:
